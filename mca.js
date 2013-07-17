@@ -67,7 +67,6 @@ var hasXcode = false;
 
 var ACTIVE_PLUGINS = [
     'chrome-bootstrap',
-    'chrome-common',
     'chrome.alarms',
     'chrome.fileSystem',
     'chrome.i18n',
@@ -329,11 +328,7 @@ function toolsCheck() {
 /******************************************************************************/
 // Init
 
-function initRepo() {
-  if (commandLineFlags['update-repo'] == 'never') {
-    return;
-  }
-
+function setupCommand() {
   function checkGit(callback) {
     var errMsg = 'git is not installed (or not available on your PATH). Please install it from http://git-scm.com';
     exec('git --version', callback, function() {
@@ -407,25 +402,15 @@ function initRepo() {
       });
     }
 
-    if (commandLineFlags['update-repo'] == 'never') {
+    exec('git pull --rebase --dry-run', function(stdout, stderr) {
+      var needsUpdate = (!!stdout || !!stderr);
+      updateAndRerun();
+    }, function(error) {
+      console.log("Could not update repo:");
+      console.error(error.toString());
+      console.log("Continuing without update.");
       callback();
-    } else {
-      exec('git pull --rebase --dry-run', function(stdout, stderr) {
-        var needsUpdate = (!!stdout || !!stderr);
-        if (!needsUpdate) {
-          callback();
-        } else if (commandLineFlags['update-repo'] == 'always') {
-          updateAndRerun();
-        } else if (commandLineFlags['update-repo'] == 'prompt') {
-          promptForUpdate();
-        }
-      }, function(error) {
-        console.log("Could not update repo:");
-        console.error(error.toString());
-        console.log("Continuing without update.");
-        callback();
-      }, true);
-    }
+    }, true);
   }
 
   function checkOutSubModules(callback) {
@@ -464,14 +449,14 @@ function initRepo() {
 /******************************************************************************/
 // Create App
 
-function createApp(appId) {
+function createCommand(appId) {
   var match = /[a-z]+\.[a-z][a-z0-9]*\.([a-z][a-z0-9]*)/i.exec(appId);
   if (!match) {
     fatal('App Name must follow the pattern: com.company.id');
   }
   var appName = match[1];
 
-  function createApp(callback) {
+  function createStep(callback) {
     console.log('## Creating Your Application');
     chdir(origDir);
 
@@ -494,9 +479,9 @@ function createApp(appId) {
       } else {
         // Create a script that runs update.js.
         if (isWindows) {
-          fs.writeFileSync('mca-update.bat', '"' + process.argv[0] + '" "' + path.join(scriptDir, scriptName) + '" --update_app');
+          fs.writeFileSync('mca-update.bat', '"' + process.argv[0] + '" "' + path.join(scriptDir, scriptName) + '" --update-app');
         } else {
-          fs.writeFileSync('mca-update.sh', '#!/bin/sh\ncd "`dirname "$0"`"\n"' + process.argv[0] + '" "' + path.join(scriptDir, scriptName) + '" --update_app "$@"');
+          fs.writeFileSync('mca-update.sh', '#!/bin/sh\ncd "`dirname "$0"`"\n"' + process.argv[0] + '" "' + path.join(scriptDir, scriptName) + '" --update-app "$@"');
           fs.chmodSync('mca-update.sh', '777');
         }
         callback();
@@ -561,16 +546,16 @@ function createApp(appId) {
     });
   }
 
-  eventQueue.push(createApp);
+  eventQueue.push(createStep);
   eventQueue.push(createDefaultApp);
-  eventQueue.push(function(callback) { updateApp(); callback(); });
+  eventQueue.push(function(callback) { updateAppCommand(); callback(); });
 }
 
 /******************************************************************************/
 /******************************************************************************/
 // Update App
 
-function updateApp() {
+function updateAppCommand() {
   var hasAndroid = fs.existsSync(path.join('platforms', 'android'));
   var hasIos = fs.existsSync(path.join('platforms', 'ios'));
 
@@ -621,44 +606,48 @@ function updateApp() {
 /******************************************************************************/
 function parseCommandLine() {
   var argv = optimist
-      .usage('Usage: $0 [appId] [options]\n' +
+      .usage('Usage: $0 command [commandArgs]\n' +
              '\n' +
-             'To ensure environment is set up correctly:\n' +
-             '    mca-create.js\n' +
-             'To create a new project using the default template:\n' +
-             '    mca-create.js com.mycompany.AppName\n' +
-             'To create a new project based off of an existing Chrome App:\n' +
-             '    mca-create.js com.mycompany.AppName --source path/to/chrome/app'
+             'Valid Commands:\n' +
+             '\n' +
+             'setup - Checks for updates to the mobile-chrome-apps repository and ensures the environment is setup correctly.\n' +
+             '    Examples:\n' +
+             '        $0 setup.\n' +
+             '\n' +
+             'create - Creates a new project.\n' +
+             '    Flags:\n' +
+             '        --source=path/to/chromeapp: Create a project based on the given chrome app.\n' +
+             '    Examples:\n' +
+             '        $0 create org.chromium.Demo\n' +
+             '        $0 create org.chromium.Spec --source=chrome-cordova/spec/www\n'
       ).options('h', {
           alias: 'help',
           desc: 'Show usage message.'
-      }).options('update-repo', {
-          type: 'string',
-          desc: 'Whether to update the mobile-chrome-apps git repository.\nValue values: always, never, prompt',
-          default: 'prompt'
       }).argv;
-  if (argv.h) {
+  var validCommands = {
+      'create': 1,
+      'setup': 1,
+      'update-app': 1 // Secret command used by our prepare hook.
+  };
+  if (argv.h || !validCommands[argv._[0]]) {
     optimist.showHelp();
     process.exit(1);
   }
   return argv;
 }
 
-module.exports = {
-  // TODO: turn this into a proper node app
-};
-
 function main() {
   commandLineFlags = parseCommandLine();
-  if (commandLineFlags['update_app']) {
-    updateApp();
-  } else {
+  var command = commandLineFlags._[0];
+  if (command == 'update-app') {
+    updateAppCommand();
+  } else if (command == 'setup') {
     toolsCheck();
-    initRepo();
-    var appId = commandLineFlags._[0];
-    if (appId) {
-      createApp(appId);
-    }
+    setupCommand();
+  } else if (command == 'create') {
+    var appId = commandLineFlags._[1] || '';
+    toolsCheck();
+    createCommand(appId);
   }
   pump();
 }
